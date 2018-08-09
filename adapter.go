@@ -36,10 +36,17 @@ type CasbinRule struct {
 
 // adapter represents the MongoDB adapter for policy storage.
 type adapter struct {
-	url        string
-	session    *mgo.Session
-	collection *mgo.Collection
-	filtered   bool
+	url            string
+	baseSession    *mgo.Session
+	filtered       bool
+	dbName         string
+	collectionName string
+}
+
+type subadapter struct {
+	collection  *mgo.Collection
+	subSession  *mgo.Session
+	baseAdapter *adapter
 }
 
 // finalizer is the destructor for adapter.
@@ -68,6 +75,20 @@ func NewFilteredAdapter(url string) persist.FilteredAdapter {
 	return NewAdapter(url).(*adapter)
 }
 
+func (a *adapter) sub() *subadapter {
+	subSession := a.baseSession.Clone()
+	collection := subSession.DB(a.dbName).C(a.collectionName)
+	return &subadapter{
+		collection:  collection,
+		subSession:  subSession,
+		baseAdapter: a,
+	}
+}
+
+func (suba *subadapter) close() {
+	suba.subSession.Close()
+}
+
 func (a *adapter) open() {
 	dI, err := mgo.ParseURL(a.url)
 	if err != nil {
@@ -85,31 +106,33 @@ func (a *adapter) open() {
 		dI.Database = "casbin"
 	}
 
+	a.dbName = dI.Database
+	a.collectionName = "casbin_rule"
+
 	session, err := mgo.DialWithInfo(dI)
 	if err != nil {
 		panic(err)
 	}
 
-	db := session.DB(dI.Database)
-	collection := db.C("casbin_rule")
+	a.baseSession = session
 
-	a.session = session
-	a.collection = collection
+	suba := a.sub()
+	defer suba.close()
 
 	indexes := []string{"ptype", "v0", "v1", "v2", "v3", "v4", "v5"}
 	for _, k := range indexes {
-		if err := a.collection.EnsureIndexKey(k); err != nil {
+		if err := suba.collection.EnsureIndexKey(k); err != nil {
 			panic(err)
 		}
 	}
 }
 
 func (a *adapter) close() {
-	a.session.Close()
+	a.baseSession.Close()
 }
 
-func (a *adapter) dropTable() error {
-	err := a.collection.DropCollection()
+func (suba *subadapter) dropTable() error {
+	err := suba.collection.DropCollection()
 	if err != nil {
 		if err.Error() != "ns not found" {
 			return err
@@ -165,19 +188,27 @@ LineEnd:
 
 // LoadPolicy loads policy from database.
 func (a *adapter) LoadPolicy(model model.Model) error {
-	return a.LoadFilteredPolicy(model, nil)
+	suba := a.sub()
+	defer suba.close()
+	return suba.loadFilteredPolicy(model, nil)
 }
 
 // LoadFilteredPolicy loads matching policy lines from database. If not nil,
 // the filter must be a valid MongoDB selector.
 func (a *adapter) LoadFilteredPolicy(model model.Model, filter interface{}) error {
+	suba := a.sub()
+	defer suba.close()
+	return suba.loadFilteredPolicy(model, filter)
+}
+
+func (suba *subadapter) loadFilteredPolicy(model model.Model, filter interface{}) error {
 	if filter == nil {
-		a.filtered = false
+		suba.baseAdapter.filtered = false
 	} else {
-		a.filtered = true
+		suba.baseAdapter.filtered = true
 	}
 	line := CasbinRule{}
-	iter := a.collection.Find(filter).Iter()
+	iter := suba.collection.Find(filter).Iter()
 	for iter.Next(&line) {
 		loadPolicyLine(line, model)
 	}
@@ -222,7 +253,9 @@ func (a *adapter) SavePolicy(model model.Model) error {
 	if a.filtered {
 		return errors.New("cannot save a filtered policy")
 	}
-	if err := a.dropTable(); err != nil {
+	suba := a.sub()
+	defer suba.close()
+	if err := suba.dropTable(); err != nil {
 		return err
 	}
 
@@ -242,19 +275,24 @@ func (a *adapter) SavePolicy(model model.Model) error {
 		}
 	}
 
-	return a.collection.Insert(lines...)
+	return suba.collection.Insert(lines...)
 }
 
 // AddPolicy adds a policy rule to the storage.
 func (a *adapter) AddPolicy(sec string, ptype string, rule []string) error {
+	suba := a.sub()
+	defer suba.close()
 	line := savePolicyLine(ptype, rule)
-	return a.collection.Insert(line)
+	return suba.collection.Insert(line)
 }
 
 // RemovePolicy removes a policy rule from the storage.
 func (a *adapter) RemovePolicy(sec string, ptype string, rule []string) error {
+	suba := a.sub()
+	defer suba.close()
+
 	line := savePolicyLine(ptype, rule)
-	if err := a.collection.Remove(line); err != nil {
+	if err := suba.collection.Remove(line); err != nil {
 		switch err {
 		case mgo.ErrNotFound:
 			return nil
@@ -301,6 +339,8 @@ func (a *adapter) RemoveFilteredPolicy(sec string, ptype string, fieldIndex int,
 		}
 	}
 
-	_, err := a.collection.RemoveAll(selector)
+	suba := a.sub()
+	defer suba.close()
+	_, err := suba.collection.RemoveAll(selector)
 	return err
 }

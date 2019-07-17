@@ -1,4 +1,4 @@
-module github.com/casbin/mongodb-adapter
+module github.com/adamwasila/mongodb-adapter
 
 go 1.12
 

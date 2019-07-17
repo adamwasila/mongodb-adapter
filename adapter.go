@@ -23,6 +23,12 @@ import (
 	"github.com/globalsign/mgo"
 )
 
+type MongoAdapter interface {
+	persist.Adapter
+	Session() *mgo.Session
+	Collection() *mgo.Collection
+}
+
 // CasbinRule represents a rule in Casbin.
 type CasbinRule struct {
 	PType string
@@ -49,7 +55,7 @@ func finalizer(a *adapter) {
 
 // NewAdapter is the constructor for Adapter. If database name is not provided
 // in the Mongo URL, 'casbin' will be used as database name.
-func NewAdapter(url string) persist.Adapter {
+func NewAdapter(url string) MongoAdapter {
 	dI, err := mgo.ParseURL(url)
 	if err != nil {
 		panic(err)
@@ -60,7 +66,7 @@ func NewAdapter(url string) persist.Adapter {
 
 // NewAdapterWithDialInfo is an alternative constructor for Adapter
 // that does the same as NewAdapter, but uses mgo.DialInfo instead of a Mongo URL
-func NewAdapterWithDialInfo(dI *mgo.DialInfo) persist.Adapter {
+func NewAdapterWithDialInfo(dI *mgo.DialInfo) MongoAdapter {
 	a := &adapter{dialInfo: dI}
 	a.filtered = false
 
@@ -80,6 +86,14 @@ func NewFilteredAdapter(url string) persist.FilteredAdapter {
 	a.filtered = true
 
 	return a
+}
+
+func (a *adapter) Session() *mgo.Session {
+	return a.session
+}
+
+func (a *adapter) Collection() *mgo.Collection {
+	return a.collection
 }
 
 func (a *adapter) open() {

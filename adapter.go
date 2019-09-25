@@ -21,6 +21,7 @@ import (
 	"github.com/casbin/casbin/v2/model"
 	"github.com/casbin/casbin/v2/persist"
 	"github.com/globalsign/mgo"
+	"github.com/globalsign/mgo/bson"
 )
 
 type MongoAdapter interface {
@@ -132,7 +133,7 @@ func (a *adapter) open() {
 	a.session = session
 	a.collection = collection
 
-	indexes := []string{"ptype", "v0", "v1", "v2", "v3", "v4", "v5"}
+	indexes := []string{"e", "ptype", "v0", "v1", "v2", "v3", "v4", "v5"}
 	for _, k := range indexes {
 		if err := a.collection.EnsureIndexKey(k); err != nil {
 			panic(err)
@@ -207,11 +208,17 @@ func (a *adapter) LoadPolicy(model model.Model) error {
 	return a.LoadFilteredPolicy(model, nil)
 }
 
+var defaultFilter = bson.M{"$or": []bson.M{
+	bson.M{"e": bson.M{"$exists": false}},
+	bson.M{"e": bson.M{"$eq": true}},
+}}
+
 // LoadFilteredPolicy loads matching policy lines from database. If not nil,
 // the filter must be a valid MongoDB selector.
 func (a *adapter) LoadFilteredPolicy(model model.Model, filter interface{}) error {
 	if filter == nil {
 		a.filtered = false
+		filter = defaultFilter
 	} else {
 		a.filtered = true
 	}

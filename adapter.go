@@ -42,10 +42,11 @@ type CasbinRule struct {
 
 // adapter represents the MongoDB adapter for policy storage.
 type adapter struct {
-	dialInfo   *mgo.DialInfo
-	session    *mgo.Session
-	collection *mgo.Collection
-	filtered   bool
+	dialInfo       *mgo.DialInfo
+	session        *mgo.Session
+	collection     *mgo.Collection
+	filtered       bool
+	collectionName string
 }
 
 // finalizer is the destructor for adapter.
@@ -55,20 +56,32 @@ func finalizer(a *adapter) {
 
 // NewAdapter is the constructor for Adapter. If database name is not provided
 // in the Mongo URL, 'casbin' will be used as database name.
-func NewAdapter(url string) MongoAdapter {
+func NewAdapter(url string, options ...func(*adapter)) MongoAdapter {
 	dI, err := mgo.ParseURL(url)
 	if err != nil {
 		panic(err)
 	}
+	return NewAdapterWithDialInfo(dI, options...)
+}
 
-	return NewAdapterWithDialInfo(dI)
+// OptionCollectionName allows to change default collection name used
+// by adapter which is 'casbin_rule'.
+func OptionCollectionName(collectionName string) func(*adapter) {
+	return func(a *adapter) {
+		a.collectionName = collectionName
+	}
 }
 
 // NewAdapterWithDialInfo is an alternative constructor for Adapter
 // that does the same as NewAdapter, but uses mgo.DialInfo instead of a Mongo URL
-func NewAdapterWithDialInfo(dI *mgo.DialInfo) MongoAdapter {
+func NewAdapterWithDialInfo(dI *mgo.DialInfo, options ...func(*adapter)) MongoAdapter {
 	a := &adapter{dialInfo: dI}
 	a.filtered = false
+	a.collectionName = "casbin_rule"
+
+	for _, option := range options {
+		option(a)
+	}
 
 	// Open the DB, create it if not existed.
 	a.open()
@@ -114,7 +127,7 @@ func (a *adapter) open() {
 	}
 
 	db := session.DB(a.dialInfo.Database)
-	collection := db.C("casbin_rule")
+	collection := db.C(a.collectionName)
 
 	a.session = session
 	a.collection = collection
